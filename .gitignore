@@ -1,0 +1,29 @@
+# Godot cache/import files
+.import/
+.cache/
+.export/
+.export.cfg
+*.import
+
+# Exported builds (IMPORTANT)
+exports/
+build/
+dist/
+
+# Logs & temp
+*.log
+*.tmp
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*~
+.godot/
+.import/
+export.cfg
+export_presets.cfg
+*.translation
