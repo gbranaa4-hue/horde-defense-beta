@@ -1,11 +1,5 @@
 # ============================================================
 # zombie.gd — BASE CREEP
-# Fixes:
-#  - Attack mode immediately seeks nearest enemy (no stalling)
-#  - move_target / has_move_target respected when set externally
-#  - Patrol mode walks waypoints correctly
-#  - STAY mode zeros velocity properly
-#  - Death sequence is clean and awards gold reliably
 # ============================================================
 extends CharacterBody3D
 class_name BaseCreep
@@ -46,14 +40,13 @@ var target_lock : float   = 0.0
 
 const TARGET_LOCK_TIME := 2.5
 
-# Move-to-position (set externally by shop attack command)
 var move_target     : Vector3 = Vector3.ZERO
 var has_move_target : bool    = false
 
 # Patrol
-var patrol_points       : Array[Vector3] = []
-var _patrol_index       : int            = 0
-var _patrol_direction   : int            = 1   # 1 = forward, -1 = reverse
+var patrol_points     : Array[Vector3] = []
+var _patrol_index     : int            = 0
+var _patrol_direction : int            = 1
 
 # ===============================
 # INTERNAL
@@ -61,6 +54,11 @@ var _patrol_direction   : int            = 1   # 1 = forward, -1 = reverse
 var _attack_timer : float = 0.0
 var _is_dead      : bool  = false
 var _anim_tree    : AnimationTree = null
+
+# Tracks whether we INTEND to be moving this frame.
+# Set true by _move_toward(), false by any idle branch.
+# Used by _update_move_blend() so we never rely on post-slide velocity.
+var _intends_to_move : bool = false
 
 # ===============================
 # READY
@@ -70,13 +68,32 @@ func _ready() -> void:
 	add_to_group("units")
 	add_to_group("creeps")
 
-	_anim_tree = get_node_or_null("AnimationPlayer2/AnimationTree") as AnimationTree
+	# Try common locations for AnimationTree
+	_anim_tree = get_node_or_null("AnimationTree") as AnimationTree
 	if _anim_tree == null:
-		push_warning("[BaseCreep] %s — AnimationTree not found." % name)
-	else:
-		_anim_tree.active = true
+		_anim_tree = get_node_or_null("AnimationPlayer2/AnimationTree") as AnimationTree
+	if _anim_tree == null:
+		# Search all children recursively
+		for child in get_children():
+			if child is AnimationTree:
+				_anim_tree = child as AnimationTree
+				break
+			for grandchild in child.get_children():
+				if grandchild is AnimationTree:
+					_anim_tree = grandchild as AnimationTree
+					break
 
-	# Locate bases on the first frame so they're available for AI
+	if _anim_tree == null:
+		push_warning("[BaseCreep] %s — AnimationTree not found anywhere in children." % name)
+	else:
+		# Make sure it is pointing at a valid AnimationPlayer
+		if _anim_tree.anim_player == NodePath(""):
+			var ap := get_node_or_null("AnimationPlayer2") as AnimationPlayer
+			if ap:
+				_anim_tree.anim_player = _anim_tree.get_path_to(ap)
+		_anim_tree.active = true
+		print("[BaseCreep] %s AnimationTree found at: %s" % [name, _anim_tree.get_path()])
+
 	await get_tree().process_frame
 	_find_bases()
 
@@ -101,24 +118,22 @@ func _physics_process(delta: float) -> void:
 	if _is_dead:
 		return
 
+	_intends_to_move = false   # reset each frame; _move_toward() sets it true
+
 	_attack_timer = max(0.0, _attack_timer - delta)
 	target_lock   = max(0.0, target_lock - delta)
 
-	# Expire stale target lock
 	if target_lock <= 0.0:
 		target = null
 
-	# If we have a live locked target, chase and attack it
 	if target != null and is_instance_valid(target):
 		_process_target()
 		_update_move_blend()
 		move_and_slide()
 		return
 
-	# External move-to-position (from shop attack command) — approach then engage
 	if has_move_target:
 		var dist_to_dest := global_position.distance_to(move_target)
-		# Look for enemies near the destination first
 		var nearby := _get_target_near(move_target, detection_range)
 		if nearby:
 			has_move_target = false
@@ -127,7 +142,6 @@ func _physics_process(delta: float) -> void:
 		elif dist_to_dest > 1.5:
 			_move_toward(move_target)
 		else:
-			# Arrived — now attack whatever is closest
 			has_move_target = false
 			var t := _get_target()
 			if t: _commit_target(t)
@@ -135,7 +149,6 @@ func _physics_process(delta: float) -> void:
 		move_and_slide()
 		return
 
-	# Standard AI tick
 	match ai_mode:
 		AIMode.ATTACK:       _tick_attack()
 		AIMode.FOLLOW_OWNER: _tick_follow()
@@ -152,18 +165,24 @@ func _physics_process(delta: float) -> void:
 func _update_move_blend() -> void:
 	if not _anim_tree:
 		return
-	var speed_ratio: float = velocity.length() / max(move_speed, 0.01)
-	_anim_tree.set("parameters/BlendSpace1D/blend_position", clampf(speed_ratio, 0.0, 1.0))
+	# Use the intent flag — not post-slide velocity — to decide blend value.
+	# This means "did the AI actually ask to move this frame?"
+	var blend : float = 0.0
+	if _intends_to_move:
+		# Use horizontal velocity magnitude relative to move_speed for smooth blend
+		var flat_speed : float = Vector2(velocity.x, velocity.z).length()
+		blend = clampf(flat_speed / maxf(move_speed, 0.01), 0.0, 1.0)
+		# Clamp tiny values to zero to avoid near-idle blend bleed
+		if blend < 0.1:
+			blend = 0.0
+	_anim_tree.set("parameters/move_blend/blend_position", blend)
 
 # ===============================
 # TARGETING
 # ===============================
-
-## Find nearest enemy within detection_range of self.
 func _get_target() -> Node3D:
 	return _get_target_near(global_position, detection_range)
 
-## Find nearest enemy within `radius` of `origin`.
 func _get_target_near(origin: Vector3, radius: float) -> Node3D:
 	var best      : Node3D = null
 	var best_dist : float  = radius
@@ -190,10 +209,12 @@ func _process_target() -> void:
 	if not is_instance_valid(target):
 		target = null
 		return
-	_move_toward(target.global_position)
 	if _in_attack_range(target):
-		velocity = Vector3.ZERO   # Stand still while attacking
+		velocity = Vector3.ZERO
+		# _intends_to_move stays false — we are standing still to attack
 		_try_attack(target)
+	else:
+		_move_toward(target.global_position)
 
 # ===============================
 # AI TICKS
@@ -204,20 +225,17 @@ func _tick_attack() -> void:
 		_commit_target(t)
 		_process_target()
 		return
-	# No enemies in range — march toward enemy base
 	if is_instance_valid(enemy_base):
 		_move_toward(enemy_base.global_position)
 	else:
 		velocity = Vector3.ZERO
 
 func _tick_follow() -> void:
-	# React to nearby enemies first (aggro)
 	var t := _get_target()
 	if t and global_position.distance_to(t.global_position) < aggro_range:
 		_commit_target(t)
 		_process_target()
 		return
-	# Follow owner player
 	if not is_instance_valid(owner_player):
 		velocity = Vector3.ZERO
 		return
@@ -232,18 +250,16 @@ func _tick_patrol() -> void:
 		velocity = Vector3.ZERO
 		return
 
-	# React to nearby enemies
 	var t := _get_target()
 	if t and global_position.distance_to(t.global_position) < aggro_range:
 		_commit_target(t)
 		_process_target()
 		return
 
-	var dest   := patrol_points[_patrol_index]
-	var dist   := global_position.distance_to(dest)
+	var dest := patrol_points[_patrol_index]
+	var dist := global_position.distance_to(dest)
 
 	if dist < 1.2:
-		# Advance index (ping-pong)
 		_patrol_index += _patrol_direction
 		if _patrol_index >= patrol_points.size():
 			_patrol_index     = patrol_points.size() - 2
@@ -257,7 +273,6 @@ func _tick_patrol() -> void:
 
 func _tick_stay() -> void:
 	velocity = Vector3.ZERO
-	# Still react defensively if attacked (target lock handles this)
 
 func set_patrol_points(points: Array) -> void:
 	patrol_points.clear()
@@ -283,7 +298,6 @@ func take_damage(amount: float, instigator: Node = null) -> void:
 	if _is_dead:
 		return
 	health -= amount
-	# Retaliate against attacker
 	if instigator != null and instigator is Node3D and is_instance_valid(instigator):
 		_commit_target(instigator as Node3D)
 	if health <= 0.0:
@@ -298,9 +312,10 @@ func _move_toward(dest: Vector3) -> void:
 	if dir.length_squared() < 0.01:
 		velocity = Vector3.ZERO
 		return
-	dir        = dir.normalized()
-	velocity   = dir * move_speed
-	rotation.y = lerp_angle(rotation.y, atan2(dir.x, dir.z), 0.15)
+	dir              = dir.normalized()
+	velocity         = dir * move_speed
+	_intends_to_move = true   # signal to blend that we are actually moving
+	rotation.y       = lerp_angle(rotation.y, atan2(dir.x, dir.z), 0.15)
 
 func _in_attack_range(t: Node3D) -> bool:
 	return is_instance_valid(t) and \
@@ -359,5 +374,10 @@ func _start_death() -> void:
 
 func _award_gold() -> void:
 	var gm := get_tree().get_first_node_in_group("game_manager")
-	if is_instance_valid(gm) and gm.has_method("add_gold"):
-		gm.add_gold(2 if team_id == 1 else 1, gold_reward)
+	if not is_instance_valid(gm):
+		push_warning("[BaseCreep] _award_gold: game_manager not found!")
+		return
+	var receiving_team : int = 2 if team_id == 1 else 1
+	print("[BaseCreep] %s | my team_id=%d | awarding %d gold to team %d" \
+		% [name, team_id, gold_reward, receiving_team])
+	gm.award_gold(receiving_team, gold_reward)

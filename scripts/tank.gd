@@ -1,8 +1,6 @@
 # ============================================================
 # tank_creep.gd
 # 🪨 TANK — High HP, periodically taunts nearby enemy creeps.
-# Inherits BaseCreep (zombie.gd). All references to
-# AnimationNodeOneShot use proper GDScript 4 syntax (no URLs).
 # ============================================================
 extends BaseCreep
 
@@ -22,19 +20,14 @@ var _taunt_timer : float = 0.0
 # READY
 # ===============================
 func _ready() -> void:
-	# Set tank-specific base stats BEFORE super._ready(),
-	# because super._ready() assigns health = max_health.
 	max_health      = 300.0
 	move_speed      = 1.8
 	damage          = 8.0
 	attack_range    = 2.2
 	attack_cooldown = 1.5
 	gold_reward     = 40
-
 	super._ready()
-
-	_taunt_timer = taunt_cooldown * randf_range(0.3, 0.7)  # Stagger first taunt
-
+	_taunt_timer = taunt_cooldown * randf_range(0.3, 0.7)
 	print("[Tank] spawned | owner_id=%d | team_id=%d" % [owner_id, team_id])
 
 # ===============================
@@ -42,26 +35,15 @@ func _ready() -> void:
 # ===============================
 func _physics_process(delta: float) -> void:
 	super._physics_process(delta)
-
 	if _is_dead:
 		return
-
 	_taunt_timer -= delta
 	if _taunt_timer <= 0.0:
 		_do_taunt()
 		_taunt_timer = taunt_cooldown
 
 # ===============================
-# ANIMATION BLEND
-# ===============================
-func _update_move_blend() -> void:
-	if not _anim_tree:
-		return
-	var speed_ratio: float = velocity.length() / max(move_speed, 0.01)
-	_anim_tree.set("parameters/BlendSpace1D/blend_position", clampf(speed_ratio, 0.0, 1.0))
-
-# ===============================
-# ATTACK — fires attack OneShot
+# ATTACK
 # ===============================
 func _try_attack(t: Node3D) -> void:
 	if _attack_timer > 0.0:
@@ -95,19 +77,15 @@ func _start_death() -> void:
 	_is_dead = true
 	velocity = Vector3.ZERO
 	set_physics_process(false)
-
 	if _anim_tree:
 		_anim_tree.set(
 			"parameters/death_shot/request",
 			AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
-
 	print("[Tank] died | awarding %d gold" % gold_reward)
-
 	var ap  := get_node_or_null("AnimationPlayer2") as AnimationPlayer
 	var dur := 1.5
 	if ap and ap.has_animation("die"):
 		dur = ap.get_animation("die").length
-
 	await get_tree().create_timer(dur).timeout
 	_award_gold()
 	queue_free()
@@ -127,7 +105,6 @@ func _do_taunt() -> void:
 		if dist <= taunt_radius:
 			u.set_forced_target(self, taunt_duration)
 			taunted += 1
-
 	print("[Tank] taunt fired | taunted %d enemy creep(s)" % taunted)
 	_play_taunt_vfx()
 

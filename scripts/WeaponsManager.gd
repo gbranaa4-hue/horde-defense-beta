@@ -23,7 +23,7 @@ var current_index  : int     = -1
 var current_weapon : BaseGun = null
 var camera         : Camera3D = null
 var player         : Node     = null
-
+var _is_firing: bool = false
 # ===============================
 # SIGNALS
 # ===============================
@@ -70,6 +70,7 @@ func _ready() -> void:
 # Top-down shooting is handled by shop.gd → player.topdown_fire() → try_shoot().
 # ===============================
 func _input(event: InputEvent) -> void:
+	print("WM INPUT:", event)
 	if _is_shop_open():
 		return
 

@@ -114,11 +114,17 @@ func _build_ui() -> void:
 	crosshair = Label.new()
 	crosshair.text = "+"
 	crosshair.add_theme_font_size_override("font_size", 28)
-	crosshair.anchor_left   = 0.5
-	crosshair.anchor_top    = 0.5
-	crosshair.anchor_right  = 0.5
-	crosshair.anchor_bottom = 0.5
-	crosshair.position = Vector2(-6, -12)
+
+	crosshair.set_anchors_preset(Control.PRESET_CENTER)
+	crosshair.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	crosshair.grow_vertical   = Control.GROW_DIRECTION_BOTH
+
+	crosshair.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	crosshair.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+
+	crosshair.custom_minimum_size = Vector2(32, 32)
+	crosshair.position            = Vector2(-16, -16)
+
 	add_child(crosshair)
 
 	ready_button = Button.new()

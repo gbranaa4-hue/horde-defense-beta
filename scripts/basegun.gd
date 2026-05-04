@@ -1,11 +1,11 @@
 # ============================================================
 # base_gun.gd
 # Hitscan weapon base class
-# - Fixed broken property references
-# - Shooting blocked outside MOUSE_MODE_CAPTURED
-# - Excludes player + gun from raycast
+# - shoot() no longer blocked on MOUSE_MODE_CAPTURED (WeaponManager
+#   already gates FPS clicks; double-gating caused drop-frame misses)
+# - ADS: right-click zooms FOV in; release restores it
+# - Excludes player from raycast
 # - Team check before applying damage
-# - Clean ammo signal flow
 # ============================================================
 extends Node3D
 class_name BaseGun
@@ -13,19 +13,27 @@ class_name BaseGun
 # ===============================
 # EXPORTS
 # ===============================
-@export var max_ammo    : int   = 30
-@export var fire_rate   : float = 0.2
-@export var reload_time : float = 2.0
-@export var damage      : float = 10.0
+@export var max_ammo      : int   = 30
+@export var fire_rate     : float = 0.2
+@export var reload_time   : float = 2.0
+@export var damage        : float = 10.0
+
+## FOV when aiming down sights (degrees). 0 = disable ADS zoom.
+@export var ads_fov       : float = 50.0
+## How quickly the FOV lerps in/out (higher = snappier).
+@export var ads_fov_speed : float = 10.0
 
 # ===============================
 # STATE
 # ===============================
-var current_ammo : int      = 0
-var can_shoot    : bool     = true
-var reloading    : bool     = false
-var camera       : Camera3D = null
-var player       : Node     = null
+var current_ammo  : int      = 0
+var can_shoot     : bool     = true
+var reloading     : bool     = false
+var camera        : Camera3D = null
+var player        : Node     = null
+
+var _is_aiming    : bool     = false
+var _default_fov  : float    = 75.0   # saved on equip
 
 # ===============================
 # SIGNALS
@@ -42,23 +50,54 @@ func _ready() -> void:
 # EQUIP / UNEQUIP
 # ===============================
 func equip(cam: Camera3D, ply: Node) -> void:
-	camera    = cam
-	player    = ply
-	can_shoot = true
-	reloading = false
+	camera       = cam
+	player       = ply
+	can_shoot    = true
+	reloading    = false
+	_is_aiming   = false
+	if is_instance_valid(camera):
+		_default_fov = camera.fov
 	ammo_changed.emit(current_ammo, max_ammo)
 
 func unequip() -> void:
+	# Restore FOV before holstering
+	if is_instance_valid(camera) and _is_aiming:
+		camera.fov = _default_fov
+	_is_aiming = false
 	camera = null
 	player = null
+
+# ===============================
+# ADS INPUT
+# ===============================
+func _input(event: InputEvent) -> void:
+	# ADS only works in FPS (captured) mode
+	if Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
+		return
+	if not is_instance_valid(camera) or ads_fov <= 0.0:
+		return
+
+	if event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_RIGHT:
+			_is_aiming = event.pressed
+			get_viewport().set_input_as_handled()
+
+# ===============================
+# PROCESS — smooth FOV lerp
+# ===============================
+func _process(delta: float) -> void:
+	if not is_instance_valid(camera) or ads_fov <= 0.0:
+		return
+	var target_fov : float = ads_fov if _is_aiming else _default_fov
+	camera.fov = lerpf(camera.fov, target_fov, clampf(ads_fov_speed * delta, 0.0, 1.0))
 
 # ===============================
 # SHOOT
 # ===============================
 func shoot() -> void:
-	# Only shoot when mouse is captured (FPS mode, shop closed)
-	if Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
-		return
+	# NOTE: Mouse-mode check removed — WeaponManager already gates FPS
+	# clicks on MOUSE_MODE_CAPTURED. Double-gating dropped shots on
+	# fast double-clicks because the mode query could flicker.
 	if not can_shoot or reloading:
 		return
 	if not is_instance_valid(camera):
@@ -97,7 +136,6 @@ func _fire_projectile() -> void:
 	query.collide_with_bodies = true
 	query.collide_with_areas  = true
 
-	# Only exclude the player — gun is Node3D so has no RID for physics
 	var excludes : Array[RID] = []
 	if is_instance_valid(player) and player.has_method("get_rid"):
 		excludes.append(player.get_rid())
@@ -109,6 +147,7 @@ func _fire_projectile() -> void:
 		apply_damage(result.collider, damage)
 	else:
 		print("[BaseGun] Ray missed.")
+
 # ===============================
 # DAMAGE
 # ===============================
@@ -122,7 +161,6 @@ func apply_damage(hit: Node, dmg: float) -> void:
 		return
 	target.take_damage(dmg, player)
 
-# Walk up the tree to find a node with take_damage()
 func _resolve_target(node: Node) -> Node:
 	var current := node
 	while is_instance_valid(current):
