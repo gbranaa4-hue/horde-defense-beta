@@ -10,8 +10,6 @@ extends BaseCreep
 
 var _taunt_timer : float = 0.0
 
-
-
 # ---------------------------------------------------------------
 func _ready() -> void:
 	max_health   = 300.0
@@ -19,8 +17,9 @@ func _ready() -> void:
 	damage       = 8.0
 	attack_range = 2.2
 	gold_reward  = 40
+	# super._ready() sets health = max_health, finds _anim_tree, and sets
+	# _anim_tree.active = true — do NOT repeat it here or you'll crash on null.
 	super._ready()
-	_anim_tree.active = true
 	print("[Tank] spawned | owner_id=%d | team_id=%d" % [owner_id, team_id])
 
 # ---------------------------------------------------------------
@@ -28,7 +27,6 @@ func _physics_process(delta: float) -> void:
 	super._physics_process(delta)
 	if _is_dead:
 		return
-	_update_move_blend()
 	_taunt_timer -= delta
 	if _taunt_timer <= 0.0:
 		_do_taunt()
@@ -37,6 +35,8 @@ func _physics_process(delta: float) -> void:
 # ---------------------------------------------------------------
 # Drive BlendSpace1D: 0.0 = idle, 1.0 = full run
 func _update_move_blend() -> void:
+	if not _anim_tree:
+		return
 	var speed_ratio := velocity.length() / move_speed
 	_anim_tree.set("parameters/BlendSpace1D/blend_position", speed_ratio)
 
@@ -46,8 +46,9 @@ func _try_attack(t: Node3D) -> void:
 	if _attack_timer > 0.0:
 		return
 	_attack_timer = attack_cooldown
-	_anim_tree.set("parameters/attack_shot/request",
-			AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
+	if _anim_tree:
+		_anim_tree.set("parameters/attack_shot/request",
+				AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
 	if t.has_method("take_damage"):
 		t.take_damage(damage, self)
 
@@ -69,12 +70,12 @@ func _start_death() -> void:
 		return
 	_is_dead = true
 	velocity = Vector3.ZERO
-	_anim_tree.set("parameters/death_shot/request",
-			AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
+	if _anim_tree:
+		_anim_tree.set("parameters/death_shot/request",
+				AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
 	print("[Tank] died | awarding %d gold" % gold_reward)
-	# Get die animation length so we wait the right amount
-	var ap := get_node_or_null("AnimationPlayer") as AnimationPlayer
-	var dur := 1.5  # fallback
+	var ap  := get_node_or_null("AnimationPlayer2") as AnimationPlayer
+	var dur := 1.5
 	if ap and ap.has_animation("die"):
 		dur = ap.get_animation("die").length
 	await get_tree().create_timer(dur).timeout

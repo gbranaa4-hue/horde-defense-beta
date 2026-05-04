@@ -1,16 +1,28 @@
 # shop.gd
 # ============================================================
+# KEY BEHAVIOUR CHANGE (re-write)
+# ─────────────────────────────────────────────────────────────
+# • Pressing Tab starts the overhead arc and gives the player a
+#   FREE mouse cursor for the ENTIRE topdown session.
+# • The cursor stays free whether the shop panel is open, hidden
+#   for placement, or hidden for attack-targeting.
+# • "Minimising" (hiding the panel) never recaptures the mouse.
+# • Returning to ground (Escape → exit topdown) is the ONLY
+#   thing that recaptures the mouse and removes the crosshair.
+# • The crosshair is only drawn while ALL of the following are
+#   true: overhead active, panel CLOSED, not placing, not
+#   targeting — so it never competes with clickable UI.
+# ============================================================
 extends Control
 class_name ShopUI
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # CONSTANTS
-# ===============================
+# ───────────────────────────────────────────────────────────────
 const TAB_TURRETS    = 0
 const TAB_PLAYER_UPG = 1
 const TAB_CREEP_UPG  = 2
 const TAB_CREEPS     = 3
-
 const TAB_NAMES      = ["Turrets", "Player Upgrades", "Creep Upgrades", "Creeps"]
 const BTN_MIN_HEIGHT = 56
 
@@ -27,25 +39,34 @@ const MAX_TURRET_DISTANCE = 30.0
 const CREEP_ORBIT_RADIUS  = 1.8
 const CREEP_ANGLE_SPREAD  = 0.55
 
-# ===============================
+const TOPDOWN_MOVE_FORWARD = Vector3(0, 0, -1)
+const TOPDOWN_MOVE_BACK    = Vector3(0, 0,  1)
+const TOPDOWN_MOVE_LEFT    = Vector3(-1, 0, 0)
+const TOPDOWN_MOVE_RIGHT   = Vector3( 1, 0, 0)
+
+const CROSSHAIR_SIZE      = 20.0  # unused — crosshair removed from topdown
+const CROSSHAIR_THICKNESS = 2.0
+const CROSSHAIR_GAP       = 6.0
+
+# ───────────────────────────────────────────────────────────────
 # EXPORTS
-# ===============================
+# ───────────────────────────────────────────────────────────────
 @export var turret_scenes: Array[PackedScene] = []
-@export var turret_costs: Array[int] = [500]
+@export var turret_costs:  Array[int]         = [500]
 
 @export var attack_creep_scenes: Array[PackedScene] = []
-@export var attack_creep_labels: Array[String] = []
-@export var attack_creep_costs:  Array[int]    = []
+@export var attack_creep_labels: Array[String]      = []
+@export var attack_creep_costs:  Array[int]         = []
 
 @export var defend_creep_scenes: Array[PackedScene] = []
-@export var defend_creep_labels: Array[String] = []
-@export var defend_creep_costs:  Array[int]    = []
+@export var defend_creep_labels: Array[String]      = []
+@export var defend_creep_costs:  Array[int]         = []
 
 @export var creep_spawn_count: int = 1
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # HARDCODED UPGRADES
-# ===============================
+# ───────────────────────────────────────────────────────────────
 const PLAYER_UPGRADES: Array = [
 	{ "label": "Max Health +50",    "stat": "max_health", "amount": 50   },
 	{ "label": "Move Speed +10%",   "stat": "move_speed", "amount": 0.10 },
@@ -68,39 +89,41 @@ const BASE_UPGRADES: Array = [
 ]
 const BASE_UPGRADE_COSTS: Array = [200, 400, 700]
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # INTERNAL STATE
-# ===============================
-var _tab_buttons: Array             = [[], [], [], []]
-var _all_buttons: Array[Dictionary] = []
-var _focused_tab: int               = 0
-var _focused_index: int             = 0
+# ───────────────────────────────────────────────────────────────
+var _tab_buttons:  Array             = [[], [], [], []]
+var _all_buttons:  Array[Dictionary] = []
+var _focused_tab:  int               = 0
+var _focused_index: int              = 0
 
-var _placement_mode: bool         = false
-var _placement_scene: PackedScene = null
-var _current_turret_index: int    = -1
+var _placement_mode:        bool         = false
+var _placement_scene:       PackedScene  = null
+var _current_turret_index:  int          = -1
+var _attack_target_mode:    bool         = false
 
-var _attack_target_mode: bool = false
-
-var _ghost: Node3D                      = null
+var _ghost:          Node3D              = null
 var _ghost_material: StandardMaterial3D = null
 
-var _topdown_cam: Camera3D = null
-var _player_cam: Camera3D  = null
-var _cam_phase: int        = 0
-var _cam_phase_t: float    = 0.0
+var _topdown_cam:    Camera3D = null
+var _player_cam:     Camera3D = null
+var _cam_phase:      int      = 0
+var _cam_phase_t:    float    = 0.0
+var _cam_start_pos:  Vector3  = Vector3.ZERO
+var _cam_start_rot:  Vector3  = Vector3.ZERO
+var _cam_start_fov:  float    = 75.0
+var _topdown_active: bool     = false
 
-var _cam_start_pos: Vector3 = Vector3.ZERO
-var _cam_start_rot: Vector3 = Vector3.ZERO
-var _cam_start_fov: float   = 75.0
-var _topdown_active: bool   = false
+var _topdown_play_mode: bool    = false
+var _topdown_shoot_dir: Vector3 = TOPDOWN_MOVE_FORWARD
+var _draw_crosshair:   bool    = false
+var _play_mode_active: bool    = false
 
-var _creep_catalogue: Array[Dictionary] = []
-var _picker_selected_index: int         = -1
+var _creep_catalogue:        Array[Dictionary] = []
+var _picker_selected_index:  int               = -1
+var _patrol_editor:          PatrolEditor       = null
 
-var _patrol_editor: PatrolEditor = null
-
-# UI node refs
+# UI node refs ─────────────────────────────────────────────────
 var shop_panel:           Panel
 var tab_container:        TabContainer
 var status_label:         Label
@@ -122,20 +145,23 @@ var _picker_gold_lbl:   Label
 var _picker_squad_lbl:  Label
 var _picker_row_btns:   Array[Button] = []
 
-# Scene refs
-var game_manager       : Node
-var player             : Node
-var main_camera        : Camera3D
-var hud                : Node
-var _player_team_id    : int = 1
+# Scene refs ───────────────────────────────────────────────────
+var game_manager:        Node
+var player:              Node
+var main_camera:         Camera3D
+var hud:                 Node
+var _player_team_id:     int = 1
 var _player_instance_id: int = -1
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # READY
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _ready() -> void:
 	add_to_group("shop")
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# FIX: mouse_filter PASS so this Control receives _draw() calls but doesn't
+	# eat mouse events when the panel is hidden (play mode).
+	mouse_filter = Control.MOUSE_FILTER_PASS
 	await get_tree().process_frame
 
 	game_manager = get_tree().get_first_node_in_group("game_manager")
@@ -144,11 +170,12 @@ func _ready() -> void:
 	hud          = get_tree().get_first_node_in_group("ui_hud")
 
 	if player:
-		_player_team_id      = player.team_id if "team_id" in player else 1
-		_player_instance_id  = player.get_instance_id()
+		_player_team_id     = player.team_id if "team_id" in player else 1
+		_player_instance_id = player.get_instance_id()
 
+	# Locate the player's head camera
 	if player:
-		var head: Node = player.get_node_or_null("Head")
+		var head := player.get_node_or_null("Head")
 		if head:
 			for child in head.get_children():
 				if child is Camera3D:
@@ -159,43 +186,50 @@ func _ready() -> void:
 				if child is Camera3D:
 					_player_cam = child
 					break
-
 	if not _player_cam:
 		_player_cam = get_viewport().get_camera_3d()
 
 	_build_shop_ui()
 	_build_all_tabs()
+	_build_crosshair_overlay()
 	close_shop()
 	_init_patrol_editor()
 
 	print("[Shop] ready | player=%s | team=%d | instance=%d" \
 		% [str(player), _player_team_id, _player_instance_id])
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # OWNERSHIP HELPERS
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _is_my_unit(unit: Node) -> bool:
-	if not is_instance_valid(unit):
-		return false
-	if "owner_id" in unit:
-		return int(unit.owner_id) == _player_instance_id
+	if not is_instance_valid(unit): return false
+	if "owner_id" in unit: return int(unit.owner_id) == _player_instance_id
 	return "team_id" in unit and int(unit.team_id) == _player_team_id
 
 func _for_each_owned_unit(callback: Callable) -> void:
 	for unit in get_tree().get_nodes_in_group("units"):
-		if _is_my_unit(unit):
-			callback.call(unit)
+		if _is_my_unit(unit): callback.call(unit)
 
 func _count_owned_units() -> int:
 	var count := 0
 	for unit in get_tree().get_nodes_in_group("units"):
-		if _is_my_unit(unit):
-			count += 1
+		if _is_my_unit(unit): count += 1
 	return count
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
+# MOUSE MODE HELPER
+# ───────────────────────────────────────────────────────────────
+func _sync_mouse_and_crosshair() -> void:
+	if not _topdown_active:
+		return
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	# Crosshair removed from topdown mode — player.gd hides the FPS one.
+	_draw_crosshair = false
+	queue_redraw()
+
+# ───────────────────────────────────────────────────────────────
 # PROCESS
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _process(delta: float) -> void:
 	if shop_panel and shop_panel.visible:
 		_refresh_button_states()
@@ -204,9 +238,15 @@ func _process(delta: float) -> void:
 
 	_update_cam_arc(delta)
 
+	# Repaint crosshair every frame so it follows viewport size changes.
+	if _draw_crosshair:
+		queue_redraw()
+
+	# Keep overhead camera locked to the player
 	if _topdown_cam and player and _cam_phase == 0 and _topdown_active:
 		_topdown_cam.global_position = player.global_position + Vector3(0, TOPDOWN_HEIGHT, 0)
 
+	# Ghost turret placement preview
 	if _placement_mode and _ghost and main_camera:
 		var hit: Variant = _raycast_ground()
 		if hit:
@@ -216,9 +256,135 @@ func _process(delta: float) -> void:
 		else:
 			_ghost.visible = false
 
-# ===============================
+	# 2D play mode: drive WASD movement and aim toward mouse cursor
+	if _play_mode_active and is_instance_valid(player):
+		_drive_topdown_movement(delta)
+		_update_shoot_dir_from_mouse()
+
+# ───────────────────────────────────────────────────────────────
+# TOPDOWN MOVEMENT DRIVER
+# ───────────────────────────────────────────────────────────────
+func _drive_topdown_movement(delta: float) -> void:
+	# FIX: Use ONLY raw key scancodes — never ui_up/down/left/right which get
+	# swallowed by the Control focus system even when the panel is invisible.
+	var move := Vector3.ZERO
+	if Input.is_key_pressed(KEY_W): move += TOPDOWN_MOVE_FORWARD
+	if Input.is_key_pressed(KEY_S): move += TOPDOWN_MOVE_BACK
+	if Input.is_key_pressed(KEY_A): move += TOPDOWN_MOVE_LEFT
+	if Input.is_key_pressed(KEY_D): move += TOPDOWN_MOVE_RIGHT
+
+	if move != Vector3.ZERO:
+		move = move.normalized()
+		_topdown_shoot_dir = move
+		_push_shoot_direction_to_player()
+
+	# Preferred: player script owns its physics
+	if player.has_method("topdown_move"):
+		player.topdown_move(move, delta)
+		return
+
+	# CharacterBody3D fallback
+	if "velocity" in player and player.has_method("move_and_slide"):
+		var speed: float = player.move_speed if "move_speed" in player else 5.0
+		if move != Vector3.ZERO:
+			player.velocity.x = move.x * speed
+			player.velocity.z = move.z * speed
+		else:
+			player.velocity.x = 0.0
+			player.velocity.z = 0.0
+		player.move_and_slide()
+		return
+
+	if move == Vector3.ZERO: return
+	var speed: float = player.move_speed if "move_speed" in player else 5.0
+	if player.has_method("move_and_collide"):
+		player.move_and_collide(move * speed * delta)
+
+## Point _topdown_shoot_dir from player toward mouse cursor on the ground.
+func _update_shoot_dir_from_mouse() -> void:
+	if not main_camera or not is_instance_valid(player): return
+	var mouse_pos := get_viewport().get_mouse_position()
+	var from      := main_camera.project_ray_origin(mouse_pos)
+	var to        := from + main_camera.project_ray_normal(mouse_pos) * 300.0
+	var result    := get_viewport().get_world_3d().direct_space_state.intersect_ray(
+		PhysicsRayQueryParameters3D.create(from, to))
+	if result.is_empty(): return
+	var world_pos: Vector3 = result["position"]
+	var diff := world_pos - (player as Node3D).global_position
+	diff.y = 0.0
+	if diff.length_squared() > 0.01:
+		_topdown_shoot_dir = diff.normalized()
+		_push_shoot_direction_to_player()
+
+# ───────────────────────────────────────────────────────────────
+# TOPDOWN PLAY MODE ENTER / EXIT
+# ───────────────────────────────────────────────────────────────
+func _enter_topdown_play_mode() -> void:
+	_topdown_play_mode = true
+	_topdown_shoot_dir = TOPDOWN_MOVE_FORWARD
+	if player and "topdown_mode" in player:
+		player.topdown_mode = true
+	_push_shoot_direction_to_player()
+	_play_mode_active = false
+	_sync_mouse_and_crosshair()
+	print("[Shop] overhead active — shop panel visible")
+
+func _enter_play_mode() -> void:
+	_play_mode_active = true
+	if player and "topdown_mode" in player:
+		player.topdown_mode = true
+	# FIX: release any focused Control so WASD keystrokes aren't eaten by buttons.
+	var focused := get_viewport().gui_get_focus_owner()
+	if focused: focused.release_focus()
+	_sync_mouse_and_crosshair()
+	print("[Shop] 2D play mode ON — crosshair=%s" % str(_draw_crosshair))
+
+func _exit_play_mode() -> void:
+	_play_mode_active = false
+	_sync_mouse_and_crosshair()
+	print("[Shop] 2D play mode OFF")
+
+func _exit_topdown_play_mode() -> void:
+	_topdown_play_mode = false
+	_play_mode_active  = false
+	if player and "topdown_mode" in player:
+		player.topdown_mode = false
+	_draw_crosshair = false
+	queue_redraw()
+	print("[Shop] exited topdown play mode")
+
+func _push_shoot_direction_to_player() -> void:
+	if not is_instance_valid(player): return
+	if "aim_direction" in player:
+		player.aim_direction = _topdown_shoot_dir
+	if player.has_method("set_aim_direction"):
+		player.set_aim_direction(_topdown_shoot_dir)
+
+# ───────────────────────────────────────────────────────────────
+# CROSSHAIR  (drawn directly by this Control — no child node)
+# ───────────────────────────────────────────────────────────────
+func _build_crosshair_overlay() -> void:
+	pass  # kept for call-site compatibility; nothing to build
+
+func _draw() -> void:
+	if not _draw_crosshair:
+		return
+	var cx := size.x * 0.5
+	var cy := size.y * 0.5
+	var g  := CROSSHAIR_GAP
+	var s  := CROSSHAIR_SIZE
+	var t  := CROSSHAIR_THICKNESS
+	var c  := Color(1.0, 1.0, 1.0, 0.92)
+	# Horizontal arms
+	draw_rect(Rect2(cx - s - g * 0.5, cy - t * 0.5, s, t), c)  # left
+	draw_rect(Rect2(cx + g * 0.5,     cy - t * 0.5, s, t), c)  # right
+	# Vertical arms
+	draw_rect(Rect2(cx - t * 0.5, cy - s - g * 0.5, t, s), c)  # top
+	draw_rect(Rect2(cx - t * 0.5, cy + g * 0.5,     t, s), c)  # bottom
+
+# ───────────────────────────────────────────────────────────────
 # CAMERA ARC
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _start_cam_arc_open() -> void:
 	if not _player_cam or not player: return
 	_cam_start_pos = _player_cam.global_position
@@ -229,11 +395,13 @@ func _start_cam_arc_open() -> void:
 	get_tree().current_scene.add_child(_topdown_cam)
 	_topdown_cam.global_position = _cam_start_pos
 	_topdown_cam.global_rotation = _cam_start_rot
-	_topdown_cam.current = true
-	_player_cam.current  = false
+	_topdown_cam.current         = true
+	_player_cam.current          = false
 	main_camera  = _topdown_cam
 	_cam_phase   = 1
 	_cam_phase_t = 0.0
+
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 
 func _start_cam_arc_close() -> void:
 	_cam_phase   = 3
@@ -245,7 +413,7 @@ func _update_cam_arc(delta: float) -> void:
 	if not player3d: return
 
 	match _cam_phase:
-		1:
+		1: # Rise to sky
 			_cam_phase_t += delta / PHASE1_DURATION
 			if _cam_phase_t >= 1.0: _cam_phase_t = 1.0
 			var ts      := smoothstep(0.0, 1.0, _cam_phase_t)
@@ -255,7 +423,8 @@ func _update_cam_arc(delta: float) -> void:
 			_topdown_cam.global_rotation = Vector3(rx, _cam_start_rot.y, 0.0)
 			_topdown_cam.fov = lerpf(_cam_start_fov, TOPDOWN_FOV, ts)
 			if _cam_phase_t >= 1.0: _cam_phase = 2; _cam_phase_t = 0.0
-		2:
+
+		2: # Pan to player overhead
 			_cam_phase_t += delta / PHASE2_DURATION
 			if _cam_phase_t >= 1.0: _cam_phase_t = 1.0
 			var ts       := smoothstep(0.0, 1.0, _cam_phase_t)
@@ -268,7 +437,10 @@ func _update_cam_arc(delta: float) -> void:
 				_cam_phase         = 0
 				_topdown_active    = true
 				shop_panel.visible = true
-		3:
+				_enter_topdown_play_mode()
+				_sync_mouse_and_crosshair()
+
+		3: # Begin return — pan back to sky
 			_cam_phase_t += delta / PHASE2_DURATION
 			if _cam_phase_t >= 1.0: _cam_phase_t = 1.0
 			var ts       := smoothstep(0.0, 1.0, _cam_phase_t)
@@ -278,7 +450,8 @@ func _update_cam_arc(delta: float) -> void:
 			_topdown_cam.global_rotation = Vector3(deg_to_rad(-90.0), 0.0, 0.0)
 			_topdown_cam.fov = TOPDOWN_FOV
 			if _cam_phase_t >= 1.0: _cam_phase = 4; _cam_phase_t = 0.0
-		4:
+
+		4: # Descend back to ground view
 			_cam_phase_t += delta / PHASE1_DURATION
 			if _cam_phase_t >= 1.0: _cam_phase_t = 1.0
 			var ts      := smoothstep(0.0, 1.0, _cam_phase_t)
@@ -290,6 +463,7 @@ func _update_cam_arc(delta: float) -> void:
 			if _cam_phase_t >= 1.0:
 				_cam_phase      = 0
 				_topdown_active = false
+				_exit_topdown_play_mode()
 				if _player_cam: _player_cam.current = true
 				_topdown_cam.queue_free()
 				_topdown_cam = null
@@ -299,9 +473,9 @@ func _update_cam_arc(delta: float) -> void:
 				if player and "ui_opened" in player: player.ui_opened = false
 				_set_hud_visible(true)
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # GHOST TURRET
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _spawn_ghost(scene: PackedScene) -> void:
 	_destroy_ghost()
 	_ghost = scene.instantiate() as Node3D
@@ -350,15 +524,25 @@ func _destroy_ghost() -> void:
 	_ghost = null
 	_ghost_material = null
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # RAYCAST / VALIDATION
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _raycast_ground() -> Variant:
 	if not main_camera: return null
 	var mouse_pos := get_viewport().get_mouse_position()
 	var from      := main_camera.project_ray_origin(mouse_pos)
 	var to        := from + main_camera.project_ray_normal(mouse_pos) * 300.0
 	var result    := get_viewport().get_world_3d().direct_space_state.intersect_ray(
+		PhysicsRayQueryParameters3D.create(from, to))
+	return result.get("position", null)
+
+func _raycast_ground_from_centre() -> Variant:
+	if not main_camera: return null
+	var vp_size := get_viewport().get_visible_rect().size
+	var centre  := vp_size * 0.5
+	var from    := main_camera.project_ray_origin(centre)
+	var to      := from + main_camera.project_ray_normal(centre) * 300.0
+	var result  := get_viewport().get_world_3d().direct_space_state.intersect_ray(
 		PhysicsRayQueryParameters3D.create(from, to))
 	return result.get("position", null)
 
@@ -378,9 +562,9 @@ func _set_hud_visible(show: bool) -> void:
 	for child in hud.get_children():
 		child.visible = show
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # BUILD UI
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _build_shop_ui() -> void:
 	shop_panel = Panel.new()
 	shop_panel.anchor_left   = 0.08
@@ -407,20 +591,20 @@ func _build_shop_ui() -> void:
 	root_vbox.add_child(title_row)
 
 	var title := Label.new()
-	title.text                  = "SHOP"
+	title.text                 = "SHOP"
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title.horizontal_alignment  = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 32)
 	title_row.add_child(title)
 
 	gold_label = Label.new()
-	gold_label.text = "💰 0"
+	gold_label.text                 = "💰 0"
 	gold_label.add_theme_font_size_override("font_size", 18)
 	gold_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	title_row.add_child(gold_label)
 
 	var hint := Label.new()
-	hint.text = "Tab: Close   Esc: Return to ground   Enter: Buy"
+	hint.text                 = "Tab: Toggle Panel   |   Esc: Return to ground   |   Enter: Buy"
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.add_theme_font_size_override("font_size", 13)
 	root_vbox.add_child(hint)
@@ -465,16 +649,16 @@ func _build_shop_ui() -> void:
 	placement_hint_label.text                 = "Left Click: Place   |   Right Click / Esc: Cancel"
 	placement_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	placement_hint_label.add_theme_font_size_override("font_size", 16)
-	placement_hint_label.anchor_left   = 0.0
-	placement_hint_label.anchor_right  = 1.0
-	placement_hint_label.anchor_top    = 0.94
-	placement_hint_label.anchor_bottom = 1.0
-	placement_hint_label.visible       = false
+	placement_hint_label.anchor_left          = 0.0
+	placement_hint_label.anchor_right         = 1.0
+	placement_hint_label.anchor_top           = 0.94
+	placement_hint_label.anchor_bottom        = 1.0
+	placement_hint_label.visible              = false
 	add_child(placement_hint_label)
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # POPULATE TABS
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _build_all_tabs() -> void:
 	_populate_turret_tab()
 	_populate_player_upgrade_tab()
@@ -543,9 +727,9 @@ func _populate_creep_upgrade_tab() -> void:
 		vbox.add_child(btn)
 		_register_button(TAB_CREEP_UPG, btn, cost)
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # CREEP TAB
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _populate_creep_tab() -> void:
 	var vbox := _get_tab_vbox(TAB_CREEPS)
 	if vbox == null: return
@@ -557,7 +741,7 @@ func _populate_creep_tab() -> void:
 	vbox.add_child(squad_row)
 
 	_picker_gold_lbl = Label.new()
-	_picker_gold_lbl.text                = "💰 0"
+	_picker_gold_lbl.text                  = "💰 0"
 	_picker_gold_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	squad_row.add_child(_picker_gold_lbl)
 
@@ -573,7 +757,6 @@ func _populate_creep_tab() -> void:
 	sel_all.pressed.connect(_picker_select_all)
 	squad_row.add_child(sel_all)
 
-	# Command row
 	var cmd_row := HBoxContainer.new()
 	cmd_row.add_theme_constant_override("separation", 6)
 	vbox.add_child(cmd_row)
@@ -591,7 +774,6 @@ func _populate_creep_tab() -> void:
 	for b in [_picker_cmd_attack, _picker_cmd_defend, _picker_cmd_patrol, _picker_cmd_stay]:
 		cmd_row.add_child(b)
 
-	# Patrol editor buttons (separator + Edit Path)
 	var sep := VSeparator.new()
 	cmd_row.add_child(sep)
 
@@ -599,7 +781,6 @@ func _populate_creep_tab() -> void:
 	btn_edit_path.pressed.connect(_open_patrol_editor)
 	cmd_row.add_child(btn_edit_path)
 
-	# Patrol action row (Send + Clear)
 	var patrol_action_row := HBoxContainer.new()
 	patrol_action_row.add_theme_constant_override("separation", 6)
 	patrol_action_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -623,7 +804,6 @@ func _populate_creep_tab() -> void:
 
 	vbox.add_child(HSeparator.new())
 
-	# Creep picker list + detail panel
 	var picker_hbox := HBoxContainer.new()
 	picker_hbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	picker_hbox.size_flags_vertical   = Control.SIZE_EXPAND_FILL
@@ -723,9 +903,9 @@ func _add_picker_row(catalogue_index: int, icon: String, lbl: String, cost: int)
 	_picker_row_btns.append(btn)
 	_tab_buttons[TAB_CREEPS].append(btn)
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # PICKER LOGIC
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _picker_select(index: int) -> void:
 	_picker_selected_index = index
 	for i in _picker_row_btns.size():
@@ -773,38 +953,36 @@ func _picker_confirm_purchase() -> void:
 		spawned = true
 		break
 
-	if spawned:
-		_show_status("%s %s deployed!" % ["⚔" if kind == "attack" else "🛡", entry["label"]])
-	else:
-		_show_status("⚠ No spawner found for team %d" % _player_team_id)
+	_show_status("%s %s deployed!" % ["⚔" if kind == "attack" else "🛡", entry["label"]] \
+		if spawned else "⚠ No spawner found for team %d" % _player_team_id)
 
 	_picker_selected_index = -1
 	for b in _picker_row_btns: b.button_pressed = false
 	_picker_detail.visible = false
 	_refresh_picker_gold()
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # AI COMMANDS
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _picker_command(mode: BaseCreep.AIMode) -> void:
 	if mode == BaseCreep.AIMode.ATTACK:
 		shop_panel.visible  = false
 		_attack_target_mode = true
+		_sync_mouse_and_crosshair()
 		_show_status("⚔ Click where you want YOUR zombies to attack. Right-click to cancel.")
 		return
 	_apply_mode_to_owned_units(int(mode))
 
 func _apply_mode_to_owned_units(mode: int) -> void:
-	var patrol_points : Array[Vector3] = []
+	var patrol_points: Array[Vector3] = []
 	if mode == BaseCreep.AIMode.PATROL:
-		# Use custom patrol points if set, otherwise default to base perimeter
 		if is_instance_valid(_patrol_editor) and not _patrol_editor._waypoints.is_empty():
 			patrol_points = _patrol_editor._waypoints.duplicate()
 		else:
 			for b in get_tree().get_nodes_in_group("bases"):
 				if "team_id" in b and b.team_id == _player_team_id:
-					var bp : Vector3 = b.global_position
-					var r  : float   = 6.0
+					var bp: Vector3 = b.global_position
+					var r: float    = 6.0
 					patrol_points = [
 						bp + Vector3( r, 0,  r),
 						bp + Vector3(-r, 0,  r),
@@ -815,8 +993,7 @@ func _apply_mode_to_owned_units(mode: int) -> void:
 
 	var count := 0
 	_for_each_owned_unit(func(unit: Node) -> void:
-		if not unit.has_method("set_ai_mode"):
-			return
+		if not unit.has_method("set_ai_mode"): return
 		if mode == BaseCreep.AIMode.PATROL and not patrol_points.is_empty():
 			if "patrol_points" in unit:
 				unit.patrol_points = patrol_points
@@ -844,9 +1021,9 @@ func _picker_select_all() -> void:
 	_for_each_owned_unit(func(_u: Node) -> void: count += 1)
 	_show_status("Your %d creep(s) selected" % count)
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # PATROL EDITOR
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _init_patrol_editor() -> void:
 	_patrol_editor = PatrolEditor.new()
 	add_child(_patrol_editor)
@@ -856,43 +1033,39 @@ func _init_patrol_editor() -> void:
 	_patrol_editor.editor_closed.connect(_on_patrol_editor_closed)
 
 func _open_patrol_editor() -> void:
-	if not is_instance_valid(_patrol_editor):
-		_init_patrol_editor()
+	if not is_instance_valid(_patrol_editor): _init_patrol_editor()
 	var cam := _player_cam if is_instance_valid(_player_cam) else get_viewport().get_camera_3d()
 	_patrol_editor._camera = cam
 	shop_panel.visible = false
+	_sync_mouse_and_crosshair()
 	_patrol_editor.open()
 
 func _on_patrol_editor_closed() -> void:
 	shop_panel.visible = true
+	_sync_mouse_and_crosshair()
 	var count := _patrol_editor._waypoints.size() if is_instance_valid(_patrol_editor) else 0
 	_show_status("Patrol editor closed. %d waypoints saved." % count)
-	# Enable Send Patrol button now that we have points
 	var btn := _find_send_patrol_button()
 	if btn: btn.disabled = count == 0
 
 func _on_send_patrol_pressed() -> void:
-	if is_instance_valid(_patrol_editor):
-		_patrol_editor.send_patrol()
+	if is_instance_valid(_patrol_editor): _patrol_editor.send_patrol()
 
 func _on_clear_patrol_pressed() -> void:
-	if is_instance_valid(_patrol_editor):
-		_patrol_editor.clear_waypoints()
+	if is_instance_valid(_patrol_editor): _patrol_editor.clear_waypoints()
 	var btn := _find_send_patrol_button()
 	if btn: btn.disabled = true
 	_show_status("Patrol path cleared.")
 
 func _on_patrol_path_set(points: Array) -> void:
 	_for_each_owned_unit(func(unit: Node) -> void:
-		if not unit.has_method("set_ai_mode"):
-			return
+		if not unit.has_method("set_ai_mode"): return
 		if "patrol_points" in unit:
 			unit.patrol_points = points
 		elif unit.has_method("set_patrol_points"):
 			unit.set_patrol_points(points)
 		unit.set_ai_mode(BaseCreep.AIMode.PATROL)
-		if "owner_player" in unit:
-			unit.owner_player = null
+		if "owner_player" in unit: unit.owner_player = null
 	)
 	_show_status("↺ Patrol applied — %d waypoints, %d zombies patrolling." % \
 		[points.size(), _count_owned_units()])
@@ -900,11 +1073,11 @@ func _on_patrol_path_set(points: Array) -> void:
 func _find_send_patrol_button() -> Button:
 	return get_node_or_null("%BtnSendPatrol") as Button
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # BUTTON HELPERS
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _register_button(tab_index: int, btn: Button, cost: int) -> void:
-	var idx : int = _tab_buttons[tab_index].size()
+	var idx: int = _tab_buttons[tab_index].size()
 	_tab_buttons[tab_index].append(btn)
 	_all_buttons.append({ "btn": btn, "cost": cost, "tab": tab_index, "idx": idx })
 	btn.focus_entered.connect(_on_button_focused.bind(tab_index, idx))
@@ -922,9 +1095,8 @@ func _on_tab_changed(tab: int) -> void:
 	_focused_tab   = tab
 	_focused_index = 0
 	_update_tab_hint()
-	var btns : Array = _tab_buttons[_focused_tab]
-	if btns.size() > 0:
-		(btns[0] as Button).grab_focus()
+	var btns: Array = _tab_buttons[_focused_tab]
+	if btns.size() > 0: (btns[0] as Button).grab_focus()
 
 func _update_tab_hint() -> void:
 	var count   : int    = _tab_buttons[_focused_tab].size()
@@ -932,36 +1104,37 @@ func _update_tab_hint() -> void:
 	tab_hint_label.text = "%s   |   %s" % [TAB_NAMES[_focused_tab], idx_str]
 
 func _activate_focused() -> void:
-	var btns : Array = _tab_buttons[_focused_tab]
+	var btns: Array = _tab_buttons[_focused_tab]
 	if _focused_index < btns.size():
 		(btns[_focused_index] as Button).emit_signal("pressed")
 
 func _refresh_button_states() -> void:
 	if not game_manager: return
-	var gold : int = game_manager.get_gold(_player_team_id)
+	var gold: int = game_manager.get_gold(_player_team_id)
 	for entry in _all_buttons:
 		if entry["tab"] == TAB_CREEPS: continue
-		var btn : Button = entry["btn"]
-		btn.disabled = entry["cost"] > gold
+		(entry["btn"] as Button).disabled = entry["cost"] > gold
 
 func _refresh_gold_label() -> void:
 	if not game_manager or not gold_label: return
 	gold_label.text = "💰 %d" % game_manager.get_gold(_player_team_id)
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # SHOP OPEN / CLOSE
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func open_shop() -> void:
+	if _cam_phase != 0: return
+
 	if _topdown_active:
 		shop_panel.visible = true
-		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 		if player and "ui_opened" in player: player.ui_opened = true
+		tab_container.current_tab = _focused_tab
 		_update_tab_hint()
 		_refresh_gold_label()
+		_sync_mouse_and_crosshair()
 		return
-	if _cam_phase != 0: return
+
 	if player and "ui_opened" in player: player.ui_opened = true
-	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	_set_hud_visible(true)
 	shop_panel.visible = false
 	_start_cam_arc_open()
@@ -971,9 +1144,9 @@ func open_shop() -> void:
 
 func close_shop() -> void:
 	shop_panel.visible = false
-	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	if player and "ui_opened" in player: player.ui_opened = false
 	_set_hud_visible(true)
+	_sync_mouse_and_crosshair()
 
 func _exit_topdown() -> void:
 	if not _topdown_active or _cam_phase != 0: return
@@ -982,21 +1155,110 @@ func _exit_topdown() -> void:
 	_start_cam_arc_close()
 
 func _toggle_shop() -> void:
-	if shop_panel.visible:  close_shop()
-	elif _topdown_active:   open_shop()
-	else:                   open_shop()
+	if _cam_phase != 0: return
+
+	if not _topdown_active:
+		# Ground → arc up, open shop panel
+		open_shop()
+
+	elif shop_panel.visible:
+		# Shop open → hide panel, enter 2D play mode
+		shop_panel.visible = false
+		if player and "ui_opened" in player: player.ui_opened = false
+		_enter_play_mode()
+
+	else:
+		# 2D play mode → reopen shop panel
+		_exit_play_mode()
+		shop_panel.visible = true
+		if player and "ui_opened" in player: player.ui_opened = true
+		_refresh_gold_label()
+		_sync_mouse_and_crosshair()
 
 func is_panel_open() -> bool:
 	return shop_panel != null and shop_panel.visible
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # INPUT
-# ===============================
+# ───────────────────────────────────────────────────────────────
+# Mouse button events go to _unhandled_input (below) because this
+# Control uses MOUSE_FILTER_PASS — mouse clicks that don't land on
+# a child Control are never delivered to _input on a PASS node.
+# Keyboard events DO arrive here correctly.
 func _input(event: InputEvent) -> void:
+	if not (event is InputEventKey and event.pressed and not event.echo): return
+
+	match event.keycode:
+		KEY_TAB:
+			_toggle_shop()
+			get_viewport().set_input_as_handled()
+
+		KEY_ESCAPE:
+			if _attack_target_mode:
+				_attack_target_mode = false
+				shop_panel.visible  = true
+				_sync_mouse_and_crosshair()
+				_show_status("Attack cancelled.")
+			elif _placement_mode:
+				_cancel_placement()
+			elif _topdown_active:
+				shop_panel.visible = false
+				_exit_topdown()
+
+		KEY_ENTER, KEY_KP_ENTER:
+			if shop_panel.visible: _activate_focused()
+
+		KEY_UP:
+			if shop_panel.visible:
+				_focused_index = max(0, _focused_index - 1)
+				_update_tab_hint()
+				var btns: Array = _tab_buttons[_focused_tab]
+				if _focused_index < btns.size():
+					(btns[_focused_index] as Button).grab_focus()
+
+		KEY_DOWN:
+			if shop_panel.visible:
+				_focused_index = min(_tab_buttons[_focused_tab].size() - 1, _focused_index + 1)
+				_update_tab_hint()
+				var btns: Array = _tab_buttons[_focused_tab]
+				if _focused_index < btns.size():
+					(btns[_focused_index] as Button).grab_focus()
+
+		KEY_LEFT:
+			if shop_panel.visible:
+				_focused_tab   = max(0, _focused_tab - 1)
+				_focused_index = 0
+				tab_container.current_tab = _focused_tab
+				_update_tab_hint()
+				var btns: Array = _tab_buttons[_focused_tab]
+				if btns.size() > 0: (btns[0] as Button).grab_focus()
+
+		KEY_RIGHT:
+			if shop_panel.visible:
+				_focused_tab   = min(TAB_NAMES.size() - 1, _focused_tab + 1)
+				_focused_index = 0
+				tab_container.current_tab = _focused_tab
+				_update_tab_hint()
+				var btns: Array = _tab_buttons[_focused_tab]
+				if btns.size() > 0: (btns[0] as Button).grab_focus()
+
+# All mouse-button logic lives here so it receives clicks regardless of
+# where on screen they land (MOUSE_FILTER_PASS doesn't block _unhandled_input).
+func _unhandled_input(event: InputEvent) -> void:
+
+	# ── 2D play mode: left-click fires ──────────────────────────────────────
+	if _play_mode_active and not _placement_mode and not _attack_target_mode:
+		if event is InputEventMouseButton and event.pressed \
+				and event.button_index == MOUSE_BUTTON_LEFT:
+			_topdown_fire()
+			get_viewport().set_input_as_handled()
+			return
+
+	# ── Attack-target mode ───────────────────────────────────────────────────
 	if _attack_target_mode:
 		if event is InputEventMouseButton and event.pressed:
 			if event.button_index == MOUSE_BUTTON_LEFT:
-				var hit : Variant = _raycast_ground()
+				var hit: Variant = _raycast_ground()
 				if hit:
 					_for_each_owned_unit(func(unit: Node) -> void:
 						if not unit.has_method("set_ai_mode"): return
@@ -1008,73 +1270,40 @@ func _input(event: InputEvent) -> void:
 					)
 					_attack_target_mode = false
 					shop_panel.visible  = true
+					_sync_mouse_and_crosshair()
 					_show_status("⚔ Zombies moving to attack position!")
 			elif event.button_index == MOUSE_BUTTON_RIGHT:
 				_attack_target_mode = false
 				shop_panel.visible  = true
+				_sync_mouse_and_crosshair()
 				_show_status("Attack cancelled.")
-		if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
-			_attack_target_mode = false
-			shop_panel.visible  = true
-			_show_status("Attack cancelled.")
 		return
 
+	# ── Placement mode ───────────────────────────────────────────────────────
 	if _placement_mode:
 		if event is InputEventMouseButton and event.pressed:
 			match event.button_index:
 				MOUSE_BUTTON_LEFT:  _place_turret()
 				MOUSE_BUTTON_RIGHT: _cancel_placement()
-		if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
-			_cancel_placement()
 		return
 
-	if not (event is InputEventKey and event.pressed and not event.echo): return
+# ───────────────────────────────────────────────────────────────
+# TOPDOWN FIRE
+# ───────────────────────────────────────────────────────────────
+func _topdown_fire() -> void:
+	if not is_instance_valid(player): return
+	# Always refresh aim direction right before firing
+	_update_shoot_dir_from_mouse()
+	if player.has_method("topdown_fire"):
+		player.topdown_fire(_topdown_shoot_dir)
+		return
+	_push_shoot_direction_to_player()
+	if player.has_method("shoot"):  player.shoot()
+	elif player.has_method("fire"): player.fire()
 
-	match event.keycode:
-		KEY_TAB:
-			_toggle_shop()
-		KEY_ESCAPE:
-			if shop_panel.visible:
-				shop_panel.visible = false
-				_exit_topdown()
-			elif _topdown_active:
-				_exit_topdown()
-		KEY_ENTER, KEY_KP_ENTER:
-			if shop_panel.visible: _activate_focused()
-		KEY_UP:
-			if shop_panel.visible:
-				_focused_index = max(0, _focused_index - 1)
-				_update_tab_hint()
-				var btns : Array = _tab_buttons[_focused_tab]
-				if _focused_index < btns.size():
-					(btns[_focused_index] as Button).grab_focus()
-		KEY_DOWN:
-			if shop_panel.visible:
-				_focused_index = min(_tab_buttons[_focused_tab].size() - 1, _focused_index + 1)
-				_update_tab_hint()
-				var btns : Array = _tab_buttons[_focused_tab]
-				if _focused_index < btns.size():
-					(btns[_focused_index] as Button).grab_focus()
-		KEY_LEFT:
-			if shop_panel.visible:
-				_focused_tab   = max(0, _focused_tab - 1)
-				_focused_index = 0
-				tab_container.current_tab = _focused_tab
-				_update_tab_hint()
-				var btns : Array = _tab_buttons[_focused_tab]
-				if btns.size() > 0: (btns[0] as Button).grab_focus()
-		KEY_RIGHT:
-			if shop_panel.visible:
-				_focused_tab   = min(TAB_NAMES.size() - 1, _focused_tab + 1)
-				_focused_index = 0
-				tab_container.current_tab = _focused_tab
-				_update_tab_hint()
-				var btns : Array = _tab_buttons[_focused_tab]
-				if btns.size() > 0: (btns[0] as Button).grab_focus()
-
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # PURCHASE HANDLERS
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _check_funds(cost: int) -> bool:
 	if not game_manager:
 		_show_status("⚠ GameManager not found!"); return false
@@ -1088,18 +1317,18 @@ func _on_turret_selected(index: int) -> void:
 	_enter_placement_mode(index)
 
 func _on_player_upgrade_selected(index: int) -> void:
-	var cost : int        = PLAYER_UPGRADE_COSTS[index] if index < PLAYER_UPGRADE_COSTS.size() else 0
+	var cost: int        = PLAYER_UPGRADE_COSTS[index] if index < PLAYER_UPGRADE_COSTS.size() else 0
 	if not _check_funds(cost): return
-	var upg  : Dictionary = PLAYER_UPGRADES[index]
+	var upg: Dictionary  = PLAYER_UPGRADES[index]
 	if player and player.has_method("apply_upgrade"):
 		player.apply_upgrade(upg["stat"], upg["amount"])
 	_show_status("⬆ %s applied!" % upg["label"])
 
 func _on_base_upgrade_selected(index: int) -> void:
-	var cost    : int        = BASE_UPGRADE_COSTS[index] if index < BASE_UPGRADE_COSTS.size() else 0
+	var cost: int       = BASE_UPGRADE_COSTS[index] if index < BASE_UPGRADE_COSTS.size() else 0
 	if not _check_funds(cost): return
-	var upg     : Dictionary = BASE_UPGRADES[index]
-	var applied : bool       = false
+	var upg: Dictionary = BASE_UPGRADES[index]
+	var applied := false
 	for b in get_tree().get_nodes_in_group("bases"):
 		if "team_id" in b and b.team_id == _player_team_id:
 			if b.has_method("add_health"):
@@ -1113,9 +1342,9 @@ func _on_base_upgrade_selected(index: int) -> void:
 	_show_status("🏯 %s applied!" % upg["label"] if applied else "⚠ Base not found!")
 
 func _on_creep_upgrade_selected(index: int, tid: int) -> void:
-	var cost : int        = CREEP_UPGRADE_COSTS[index] if index < CREEP_UPGRADE_COSTS.size() else 0
+	var cost: int       = CREEP_UPGRADE_COSTS[index] if index < CREEP_UPGRADE_COSTS.size() else 0
 	if not _check_funds(cost): return
-	var upg  : Dictionary = CREEP_UPGRADES[index].duplicate()
+	var upg: Dictionary = CREEP_UPGRADES[index].duplicate()
 	upg["team_id"] = tid
 	if game_manager and game_manager.has_method("add_creep_upgrade"):
 		game_manager.add_creep_upgrade(tid, upg)
@@ -1124,22 +1353,22 @@ func _on_creep_upgrade_selected(index: int, tid: int) -> void:
 func _assign_surround_offset(creep: Node, slot_index: int, total_slots: int) -> void:
 	if not is_instance_valid(creep): return
 	if not "attack_offset" in creep: return
-	var base_angle : float = (TAU / max(total_slots, 1)) * slot_index
-	var angle      : float = base_angle + randf_range(-CREEP_ANGLE_SPREAD, CREEP_ANGLE_SPREAD)
-	var radius     : float = CREEP_ORBIT_RADIUS + randf_range(-0.4, 0.6)
+	var base_angle: float = (TAU / max(total_slots, 1)) * slot_index
+	var angle:      float = base_angle + randf_range(-CREEP_ANGLE_SPREAD, CREEP_ANGLE_SPREAD)
+	var radius:     float = CREEP_ORBIT_RADIUS + randf_range(-0.4, 0.6)
 	creep.attack_offset = Vector3(cos(angle) * radius, 0.0, sin(angle) * radius)
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # TURRET PLACEMENT
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _enter_placement_mode(index: int) -> void:
 	_placement_mode       = true
 	_current_turret_index = index
 	_placement_scene      = turret_scenes[index]
 	shop_panel.visible    = false
 	placement_hint_label.visible = true
-	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	if player and "ui_opened" in player: player.ui_opened = true
+	_sync_mouse_and_crosshair()
 	_spawn_ghost(_placement_scene)
 
 func _cancel_placement() -> void:
@@ -1149,8 +1378,9 @@ func _cancel_placement() -> void:
 	_current_turret_index = -1
 	placement_hint_label.visible = false
 	if _topdown_active:
-		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+		shop_panel.visible = true
 		if player and "ui_opened" in player: player.ui_opened = false
+		_sync_mouse_and_crosshair()
 	else:
 		_exit_topdown()
 
@@ -1171,14 +1401,15 @@ func _place_turret() -> void:
 	_current_turret_index = -1
 	placement_hint_label.visible = false
 	if _topdown_active:
-		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+		shop_panel.visible = true
 		if player and "ui_opened" in player: player.ui_opened = false
+		_sync_mouse_and_crosshair()
 	else:
 		_exit_topdown()
 
-# ===============================
+# ───────────────────────────────────────────────────────────────
 # HELPERS
-# ===============================
+# ───────────────────────────────────────────────────────────────
 func _show_status(text: String) -> void:
 	if status_label: status_label.text = text
 
@@ -1200,20 +1431,20 @@ func _make_cmd_button(label_text: String) -> Button:
 
 func _make_section_label(label_text: String) -> Label:
 	var lbl := Label.new()
-	lbl.text               = label_text
+	lbl.text                 = label_text
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lbl.add_theme_font_size_override("font_size", 16)
 	return lbl
 
 func _make_placeholder(label_text: String) -> Label:
 	var lbl := Label.new()
-	lbl.text               = label_text
+	lbl.text                 = label_text
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	return lbl
 
 func _refresh_picker_gold() -> void:
 	if not game_manager or not is_instance_valid(_picker_gold_lbl): return
-	var gold : int = game_manager.get_gold(_player_team_id)
+	var gold: int = game_manager.get_gold(_player_team_id)
 	_picker_gold_lbl.text = "💰 %d" % gold
 
 	var owned_count := 0
