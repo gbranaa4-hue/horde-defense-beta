@@ -1,13 +1,20 @@
+# ============================================================
+# weapon_manager.gd
+# Handles equipping, switching, shooting, and reloading guns.
+# Shooting is NOT gated on MOUSE_MODE_CAPTURED so top-down fire
+# works. The shop's _unhandled_input fires via player.topdown_fire()
+# → weapon_manager.try_shoot(), bypassing this _input entirely.
+# ============================================================
 extends Node
 class_name WeaponManager
 
 # ===============================
 # EXPORTS
 # ===============================
-@export var weapons              : Array[BaseGun] = []
-@export var switch_sound         : AudioStreamPlayer = null
-@export var default_gun_position : Vector3 = Vector3(0.2, -0.2, -0.6)
-@export var weapon_holder        : Node3D  = null
+@export var weapons              : Array[BaseGun]         = []
+@export var switch_sound         : AudioStreamPlayer      = null
+@export var default_gun_position : Vector3                = Vector3(0.2, -0.2, -0.6)
+@export var weapon_holder        : Node3D                 = null
 
 # ===============================
 # STATE
@@ -57,16 +64,19 @@ func _ready() -> void:
 	equip(0)
 
 # ===============================
-# INPUT — owns all weapon switching
+# INPUT
+# Owns weapon switching (scroll wheel) and reload (R).
+# FPS left-click shooting is handled here.
+# Top-down shooting is handled by shop.gd → player.topdown_fire() → try_shoot().
 # ===============================
 func _input(event: InputEvent) -> void:
-	# Block weapon input when shop is open
 	if _is_shop_open():
 		return
 
 	if event is InputEventMouseButton and event.pressed:
 		match event.button_index:
 			MOUSE_BUTTON_LEFT:
+				# FPS mode only — top-down click is consumed by shop._unhandled_input first
 				if Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
 					try_shoot()
 			MOUSE_BUTTON_WHEEL_UP:
@@ -74,6 +84,12 @@ func _input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 			MOUSE_BUTTON_WHEEL_DOWN:
 				switch_weapon(1)
+				get_viewport().set_input_as_handled()
+
+	if event is InputEventKey and event.pressed and not event.echo:
+		match event.keycode:
+			KEY_R:
+				try_reload()
 				get_viewport().set_input_as_handled()
 
 # ===============================
@@ -135,11 +151,22 @@ func equip(index: int) -> void:
 # ===============================
 func try_shoot() -> void:
 	var gun := get_current_weapon()
-	if gun: gun.shoot()
+	if gun == null:
+		return
+	# If out of ammo, auto-reload instead of dry-firing
+	if "current_ammo" in gun and gun.current_ammo <= 0:
+		try_reload()
+		return
+	gun.shoot()
 
 func try_reload() -> void:
 	var gun := get_current_weapon()
-	if gun: gun.reload()
+	if gun == null:
+		return
+	if gun.has_method("reload"):
+		gun.reload()
+	else:
+		push_warning("[WeaponManager] Current gun has no reload() method.")
 
 func get_current_weapon() -> BaseGun:
 	if current_index < 0 or weapons.is_empty():
@@ -173,7 +200,7 @@ func _set_active_recursive(node: Node, active: bool) -> void:
 		_set_active_recursive(child, active)
 
 # ===============================
-# AUTO COLLECT
+# AUTO COLLECT GUNS
 # ===============================
 func _collect_guns(root: Node) -> void:
 	for child in root.get_children():

@@ -36,11 +36,11 @@ const BASE_WALK_SPEED   : float = 5.0
 const BASE_SPRINT_SPEED : float = 9.0
 
 # ===============================
-# UI STATE
+# UI / MODE STATE
 # ===============================
-var ui_opened    : bool    = false
-var topdown_mode : bool    = false
-var aim_direction: Vector3 = Vector3(0, 0, -1)
+var ui_opened     : bool    = false
+var topdown_mode  : bool    = false
+var aim_direction : Vector3 = Vector3(0, 0, -1)
 
 # ===============================
 # SIGNALS
@@ -48,7 +48,7 @@ var aim_direction: Vector3 = Vector3(0, 0, -1)
 signal health_changed(current: float, maximum: float)
 
 # ===============================
-# NODES
+# NODE REFS
 # ===============================
 @onready var head           : Node3D        = $Head
 @onready var camera         : Camera3D      = $Head/Camera3D
@@ -78,6 +78,7 @@ func _input(event: InputEvent) -> void:
 	if _is_dead:
 		return
 
+	# Mouse look — only in FPS mode with captured mouse
 	if event is InputEventMouseMotion:
 		if Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED and not topdown_mode:
 			_apply_mouse_look(event.relative)
@@ -88,18 +89,21 @@ func _input(event: InputEvent) -> void:
 
 	match event.keycode:
 		KEY_TAB:
-			_toggle_shop()
+			# Delegate entirely to shop
+			var shop := _get_shop()
+			if is_instance_valid(shop) and shop.has_method("toggle_shop"):
+				shop.toggle_shop()
 		KEY_1:
-			_command_creeps(0)
+			_command_creeps(0)   # Attack
 		KEY_2:
-			_command_creeps(1)
+			_command_creeps(1)   # Defend
 		KEY_3:
-			_command_creeps(2)
+			_command_creeps(2)   # Patrol
 		KEY_4:
-			_command_creeps(3)
+			_command_creeps(3)   # Stay
 
 # ===============================
-# CREEP COMMANDS
+# CREEP HOTKEY COMMANDS
 # ===============================
 func _command_creeps(mode_index: int) -> void:
 	var shop := _get_shop()
@@ -117,6 +121,7 @@ func _physics_process(delta: float) -> void:
 	_apply_gravity(delta)
 
 	if _is_shop_panel_open():
+		# Slow to stop while shop is open
 		velocity.x = move_toward(velocity.x, 0.0, walk_speed)
 		velocity.z = move_toward(velocity.z, 0.0, walk_speed)
 	elif topdown_mode:
@@ -152,6 +157,8 @@ func _handle_fps_movement() -> void:
 
 # ===============================
 # TOP-DOWN MOVEMENT
+# (shop.gd also drives movement via topdown_move(); this is the fallback
+#  for when the shop calls player.topdown_move directly)
 # ===============================
 func _handle_topdown_movement() -> void:
 	var speed := sprint_speed if Input.is_action_pressed("sprint") else walk_speed
@@ -168,6 +175,16 @@ func _handle_topdown_movement() -> void:
 	velocity.x = dir.x * speed
 	velocity.z = dir.z * speed
 
+## Called by shop.gd each frame during play mode.
+func topdown_move(dir: Vector3, _delta: float) -> void:
+	var speed := sprint_speed if Input.is_action_pressed("sprint") else walk_speed
+	if dir.length_squared() > 0.0:
+		velocity.x = dir.x * speed
+		velocity.z = dir.z * speed
+	else:
+		velocity.x = move_toward(velocity.x, 0.0, speed)
+		velocity.z = move_toward(velocity.z, 0.0, speed)
+
 # ===============================
 # TOPDOWN AIM / FIRE
 # ===============================
@@ -175,15 +192,14 @@ func set_aim_direction(dir: Vector3) -> void:
 	aim_direction = dir
 	_face_direction(dir)
 
+## Called by shop.gd when the player left-clicks in top-down play mode.
 func topdown_fire(dir: Vector3) -> void:
 	aim_direction = dir
 	_face_direction(dir)
 	if is_instance_valid(weapon_manager):
 		weapon_manager.try_shoot()
 
-## Rotate so the player's -Z faces `dir`.
-## look_at(pos + dir) makes -Z point toward (pos + dir), which is correct.
-## Do NOT negate dir here — that was the old bug causing 180° flip.
+## Rotate player body so -Z faces `dir` (flat, ignoring Y).
 func _face_direction(dir: Vector3) -> void:
 	if dir.length_squared() < 0.01:
 		return
@@ -221,20 +237,12 @@ func _update_crosshair() -> void:
 		return
 	var vp_size        := get_viewport().get_visible_rect().size
 	crosshair.position  = (vp_size - crosshair.size) / 2.0
-	# Hide FPS crosshair entirely while overhead.
-	crosshair.visible   = not topdown_mode and not _is_shop_panel_open()
+	# Hide FPS crosshair while in overhead / top-down mode
+	crosshair.visible   = (not topdown_mode) and (not _is_shop_panel_open())
 
 # ===============================
 # SHOP HELPERS
 # ===============================
-func _toggle_shop() -> void:
-	var shop := _get_shop()
-	if not is_instance_valid(shop): return
-	if ui_opened or _is_shop_panel_open():
-		if shop.has_method("close_shop"): shop.close_shop()
-	else:
-		if shop.has_method("open_shop"):  shop.open_shop()
-
 func _get_shop() -> Node:
 	return get_tree().get_first_node_in_group("shop")
 
@@ -276,8 +284,8 @@ func _respawn() -> void:
 
 	max_health   = 100.0 + _upgrade_bonuses["max_health"]
 	health       = max_health
-	walk_speed   = BASE_WALK_SPEED   + _upgrade_bonuses["move_speed"] * BASE_WALK_SPEED
-	sprint_speed = BASE_SPRINT_SPEED + _upgrade_bonuses["move_speed"] * BASE_SPRINT_SPEED
+	walk_speed   = BASE_WALK_SPEED   * (1.0 + _upgrade_bonuses["move_speed"])
+	sprint_speed = BASE_SPRINT_SPEED * (1.0 + _upgrade_bonuses["move_speed"])
 
 	health_changed.emit(health, max_health)
 
@@ -300,8 +308,8 @@ func apply_upgrade(stat: String, amount: float) -> void:
 			health_changed.emit(health, max_health)
 		"move_speed":
 			_upgrade_bonuses["move_speed"] += amount
-			walk_speed   *= (1.0 + amount)
-			sprint_speed *= (1.0 + amount)
+			walk_speed   = BASE_WALK_SPEED   * (1.0 + _upgrade_bonuses["move_speed"])
+			sprint_speed = BASE_SPRINT_SPEED * (1.0 + _upgrade_bonuses["move_speed"])
 		"fire_rate":
 			_upgrade_bonuses["fire_rate"] += amount
 		"damage":
